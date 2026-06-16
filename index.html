@@ -140,6 +140,10 @@
         <div class="row"><label for="ino">Inotropy <span class="tag">· cardiac curve</span></label><span class="num" id="inoNum">normal</span></div>
         <input type="range" id="ino" min="0.4" max="1.8" step="0.01" value="1.0">
       </div>
+      <div class="ctrl cardiac">
+        <div class="row"><label for="aft">Afterload / TPR <span class="tag">· cardiac curve</span></label><span class="num" id="aftNum">normal</span></div>
+        <input type="range" id="aft" min="0.6" max="1.6" step="0.01" value="1.0">
+      </div>
       <div class="ctrl venous">
         <div class="row"><label for="vol">Blood volume <span class="tag">· P<sub>msf</sub></span></label><span class="num" id="volNum">7.0 mmHg</span></div>
         <input type="range" id="vol" min="3" max="14" step="0.1" value="7.0">
@@ -158,6 +162,8 @@
         <button class="preset" data-p="hemorrhage">Hemorrhage<br><span style="color:var(--ink-soft);font-size:.7rem">↓ volume</span></button>
         <button class="preset" data-p="overload">Fluid overload<br><span style="color:var(--ink-soft);font-size:.7rem">↑ volume</span></button>
         <button class="preset" data-p="venocon">Venoconstriction<br><span style="color:var(--ink-soft);font-size:.7rem">↑ P<sub>msf</sub></span></button>
+        <button class="preset" data-p="symp">Sympathetic ↑<br><span style="color:var(--ink-soft);font-size:.7rem">ino↑ veno↑ TPR↑</span></button>
+        <button class="preset" data-p="vagal">Sympathetic ↓<br><span style="color:var(--ink-soft);font-size:.7rem">withdrawal / vagal</span></button>
       </div>
 
       <div class="divider"></div>
@@ -181,16 +187,22 @@
   const THR        = -4;          // mmHg, RAP where Starling curve leaves zero
   const K          = -Math.log(1 - 5/13) / 6;   // tuned so normal eq = (2, 5.0)
   const RAP_COLLAPSE = -2;        // mmHg, below this great veins collapse -> VR plateaus
+  const AFT_SENS   = 0.35;        // afterload sensitivity at normal inotropy (scales 1/ino)
 
   // Axis domain
   const X0=-4, X1=14, Y0=0, Y1=16;
 
   // Baseline (ghost) parameters
-  const BASE = {ino:1.0, pmsf:7.0, rvr:1.0};
+  const BASE = {ino:1.0, pmsf:7.0, rvr:1.0, aft:1.0};
 
-  function cardiac(rap, ino){
-    const COmax = COMAX_BASE*ino;
+  // Afterload depresses the cardiac curve; sensitivity rises as inotropy falls
+  // (the failing heart is far more afterload-sensitive than the normal heart).
+  function afterloadFactor(aft, ino){
+    return Math.max(0.2, Math.min(1.6, 1 - (AFT_SENS/ino)*(aft-1)));
+  }
+  function cardiac(rap, ino, aft){
     if(rap<=THR) return 0;
+    const COmax = COMAX_BASE*ino*afterloadFactor(aft, ino);
     return COmax*(1-Math.exp(-K*(rap-THR)));
   }
   function venous(rap, pmsf, rvr){
@@ -202,15 +214,15 @@
   }
   // Find intersection by scanning sign change of (cardiac - venous)
   function equilibrium(p){
-    let prevX=X0, prevD=cardiac(X0,p.ino)-venous(X0,p.pmsf,p.rvr);
+    let prevX=X0, prevD=cardiac(X0,p.ino,p.aft)-venous(X0,p.pmsf,p.rvr);
     const N=2000, step=(X1-X0)/N;
     for(let i=1;i<=N;i++){
       const x=X0+i*step;
-      const d=cardiac(x,p.ino)-venous(x,p.pmsf,p.rvr);
+      const d=cardiac(x,p.ino,p.aft)-venous(x,p.pmsf,p.rvr);
       if((prevD<=0&&d>=0)||(prevD>=0&&d<=0)){
         const t=prevD/(prevD-d);            // linear interp on the difference
         const xe=prevX+t*(x-prevX);
-        return {rap:xe, co:cardiac(xe,p.ino)};
+        return {rap:xe, co:cardiac(xe,p.ino,p.aft)};
       }
       prevX=x; prevD=d;
     }
@@ -281,7 +293,7 @@
     if(showGhost){
       ctx.setLineDash([6,5]); ctx.lineWidth=1.8;
       ctx.strokeStyle=getCSS('--cardiac-soft');
-      curvePath(x=>cardiac(x,BASE.ino)); ctx.stroke();
+      curvePath(x=>cardiac(x,BASE.ino,BASE.aft)); ctx.stroke();
       ctx.strokeStyle=getCSS('--venous-soft');
       curvePath(x=>venous(x,BASE.pmsf,BASE.rvr)); ctx.stroke();
       ctx.setLineDash([]);
@@ -290,7 +302,7 @@
     // --- live curves ---
     ctx.lineWidth=3;
     ctx.strokeStyle=getCSS('--cardiac');
-    curvePath(x=>cardiac(x,p.ino)); ctx.stroke();
+    curvePath(x=>cardiac(x,p.ino,p.aft)); ctx.stroke();
     ctx.strokeStyle=getCSS('--venous');
     curvePath(x=>venous(x,p.pmsf,p.rvr)); ctx.stroke();
 
@@ -304,7 +316,7 @@
     // --- curve labels ---
     ctx.font='600 12.5px -apple-system,Segoe UI,Arial';ctx.textAlign='left';ctx.textBaseline='bottom';
     ctx.fillStyle=getCSS('--cardiac');
-    ctx.fillText('cardiac function', PX(5.6), PY(cardiac(8,p.ino))-6);
+    ctx.fillText('cardiac function', PX(5.6), PY(cardiac(8,p.ino,p.aft))-6);
     ctx.fillStyle=getCSS('--venous');
     ctx.fillText('venous return', PX(X0+0.4), PY(venous(0.2,p.pmsf,p.rvr))-6);
 
@@ -327,6 +339,7 @@
   // ---- State & UI ----------------------------------------------------------
   let showEq=true, showGhost=true;
   const ino=document.getElementById('ino'),
+        aft=document.getElementById('aft'),
         vol=document.getElementById('vol'),
         rvr=document.getElementById('rvr');
 
@@ -334,10 +347,15 @@
     if(v<0.7) return 'depressed'; if(v<0.92) return 'reduced';
     if(v<=1.08) return 'normal'; if(v<1.4) return 'enhanced'; return 'high';
   }
+  function aftWord(v){
+    if(v<0.85) return 'reduced'; if(v<=1.15) return 'normal';
+    if(v<1.35) return 'increased'; return 'high';
+  }
 
   function update(){
-    const p={ino:+ino.value, pmsf:+vol.value, rvr:+rvr.value};
+    const p={ino:+ino.value, aft:+aft.value, pmsf:+vol.value, rvr:+rvr.value};
     document.getElementById('inoNum').textContent=inoWord(p.ino)+' ('+p.ino.toFixed(2)+'\u00d7)';
+    document.getElementById('aftNum').textContent=aftWord(p.aft)+' ('+p.aft.toFixed(2)+'\u00d7)';
     document.getElementById('volNum').textContent=p.pmsf.toFixed(1)+' mmHg';
     document.getElementById('rvrNum').textContent=p.rvr.toFixed(2);
     const eq=draw(p);
@@ -355,7 +373,7 @@
   function writeInsight(p,eq){
     const dCO=eq.co-5.0, dRAP=eq.rap-2.0;
     let msg;
-    if(Math.abs(p.ino-1)<0.06 && Math.abs(p.pmsf-7)<0.15 && Math.abs(p.rvr-1.0)<0.04){
+    if(Math.abs(p.ino-1)<0.06 && Math.abs(p.pmsf-7)<0.15 && Math.abs(p.rvr-1.0)<0.04 && Math.abs(p.aft-1)<0.06){
       msg='<b>Normal operating point.</b> The heart pumps exactly what the veins return — about 5 L/min at a right atrial pressure near 2 mmHg.';
     } else {
       const co = dCO>0.2?'risen':dCO<-0.2?'fallen':'held steady';
@@ -367,23 +385,25 @@
     document.getElementById('insight').innerHTML=msg;
   }
 
-  [ino,vol,rvr].forEach(s=>s.addEventListener('input',()=>{clearActive();update();}));
+  [ino,aft,vol,rvr].forEach(s=>s.addEventListener('input',()=>{clearActive();update();}));
   window.addEventListener('resize',update);
 
   // Presets
   const PRESETS={
-    normal:{ino:1.0,pmsf:7.0,rvr:1.0},
-    exercise:{ino:1.6,pmsf:10.0,rvr:0.6},
-    hf:{ino:0.5,pmsf:9.0,rvr:1.0},
-    hemorrhage:{ino:1.0,pmsf:4.0,rvr:1.0},
-    overload:{ino:1.0,pmsf:11.0,rvr:1.0},
-    venocon:{ino:1.0,pmsf:10.0,rvr:1.0}
+    normal:{ino:1.0,pmsf:7.0,rvr:1.0,aft:1.0},
+    exercise:{ino:1.6,pmsf:10.0,rvr:0.6,aft:0.85},
+    hf:{ino:0.5,pmsf:9.0,rvr:1.0,aft:1.0},
+    hemorrhage:{ino:1.0,pmsf:4.0,rvr:1.0,aft:1.0},
+    overload:{ino:1.0,pmsf:11.0,rvr:1.0,aft:1.0},
+    venocon:{ino:1.0,pmsf:10.0,rvr:1.0,aft:1.0},
+    symp:{ino:1.5,pmsf:11.0,rvr:1.0,aft:1.3},
+    vagal:{ino:0.75,pmsf:5.0,rvr:1.0,aft:0.8}
   };
   function clearActive(){document.querySelectorAll('.preset').forEach(b=>b.classList.remove('active'));}
   document.querySelectorAll('.preset').forEach(btn=>{
     btn.addEventListener('click',()=>{
       const p=PRESETS[btn.dataset.p];
-      ino.value=p.ino; vol.value=p.pmsf; rvr.value=p.rvr;
+      ino.value=p.ino; vol.value=p.pmsf; rvr.value=p.rvr; aft.value=p.aft;
       clearActive(); btn.classList.add('active');
       if(!showEq) toggleEq(true);   // reveal when a scenario is chosen
       update();
